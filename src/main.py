@@ -14,7 +14,7 @@ from kivy.utils import get_color_from_hex
 from functools import partial
 
 from domain import (
-    Puzzle,
+    PuzzleSpec,
     WordSpec,
     generate_crossword_puzzle,
     mock_generate_words_clues,
@@ -111,7 +111,7 @@ class CrosswordCell(TextInput):
 class CrosswordGrid(FloatLayout):
     """Handles only the grid and cell logic, exposes events for the controller"""
 
-    def __init__(self, puzzle: Puzzle, **kwargs):
+    def __init__(self, puzzle: PuzzleSpec, **kwargs):
         super().__init__(**kwargs)
         self.puzzle = puzzle
         self.cells = {}
@@ -397,7 +397,7 @@ class CrosswordApp(App):
             return
         no, pid = puzzles[-1]
         data = self.puzzle_store.store.get(pid)
-        puzzle = Puzzle.from_dict(data)
+        puzzle = PuzzleSpec.from_dict(data)
         self.current_puzzle = puzzle
         self.current_no = no
         self.display_puzzle(puzzle)
@@ -432,7 +432,7 @@ class CrosswordApp(App):
         self.display_puzzle(puzzle)
         popup.dismiss()
 
-    def display_puzzle(self, puzzle: Puzzle):
+    def display_puzzle(self, puzzle: PuzzleSpec):
         self.grid_container.clear_widgets()
         self.current_grid = CrosswordGrid(puzzle)
         self.current_grid.on_word_complete = self.on_word_complete

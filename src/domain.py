@@ -1,6 +1,11 @@
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Tuple, Optional, Dict, Set
+from operator import itemgetter
+import re
+import bisect
+import time
+from typing import Optional
 import random
 
 # -----------------------
@@ -13,290 +18,327 @@ def generate_puzzle_id() -> str:
     seconds_since_midnight = int((now - midnight).total_seconds())
     return f"{now.year:04d}{now.month:02d}{now.day:02d}{seconds_since_midnight:05d}"
 
-@dataclass
-class WordSpec:
-    word: str
-    clue: str
-    position: Tuple[int, int] = None  # (row, col) 1-based coordinates
-    direction: str = None             # 'across' or 'down'
-    number: int = 0
-
-@dataclass
-class Puzzle:
-    id: str = field(default_factory=generate_puzzle_id)
-    rows: int = 0
-    cols: int = 0
-    words: List[WordSpec] = field(default_factory=list)
-    # Puzzle sequential number stored/persisted in Store 
-    no: int = None
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "rows": self.rows,
-            "cols": self.cols,
-            "words": [w.__dict__ for w in self.words]
-        }
-
-    @staticmethod
-    def from_dict(data):
-        return Puzzle(
-            id=data["id"],
-            rows=data["rows"],
-            cols=data["cols"],
-            words=[WordSpec(**w) for w in data["words"]]
-        )
 
 
-def generate_crossword_puzzle(
-    word_clue_list: List[Tuple[str, str]],
-    orientation: str = "portrait"
-) -> Tuple[Puzzle, List[str]]:
+# @dataclass
+# class WordSpec:
+#     word: str
+#     clue: str
+#     # starting first row and col
+#     row: int = None
+#     col: int = None
+#     # 0='across', 1='down'
+#     direction: int = None
+    
+# @dataclass
+# class PuzzleSpec:
+#     id: str = field(default_factory=generate_puzzle_id)
+#     rows: int = 0
+#     cols: int = 0
+#     words: List[WordSpec] = field(default_factory=list)
+#     # Puzzle sequential number stored/persisted in Store 
+#     no: int = None
+
+#     def to_dict(self):
+#         return {
+#             "id": self.id,
+#             "rows": self.rows,
+#             "cols": self.cols,
+#             "words": [w.__dict__ for w in self.words]
+#         }
+
+#     @staticmethod
+#     def from_dict(data):
+#         return PuzzleSpec(
+#             id=data["id"],
+#             rows=data["rows"],
+#             cols=data["cols"],
+#             words=[WordSpec(**w) for w in data["words"]]
+#         )
+
+
+def count_chars(s: str) -> int:
+    """Count letters in s, return (nb_chars, firstchar_pos, lastchar_pos)
+    string s is expected to contain letters and '-' as fillable markers.
     """
-    Generate a sparse crossword puzzle from a list of (word, clue) tuples.
-    - orientation: "portrait" or "landscape"
-    Returns: (Puzzle, excluded_words)
+    allchars_pos = [(m.span()[0]) for m in re.finditer(r'\w', s)]
+    if len(allchars_pos) == 0:
+        raise ValueError("No letters in string")
+    
+    return (len(allchars_pos), allchars_pos[0], allchars_pos[-1])
+
+
+def get_regex(letter_seq: str):
+    """ Generate regex pattern string for a given letter sequence.
+    Args:
+        letter_seq: String of letters, e.g. '--R----G--E'
+    Returns:
+        Regex pattern string, e.g. r'\[(\d+)\](\w{0,2}R\w{4}G\w{2}E)\[(\d+)\]'
     """
-    # Normalize words to uppercase, remove duplicates
-    word_clue_list = [(w.upper(), c) for w, c in word_clue_list]
-    words = [w for w, _ in word_clue_list]
-    clues = dict(word_clue_list)
-    used_words: Set[str] = set()
-    placed_words: List[WordSpec] = []
-    excluded_words: List[str] = []
+    pfix = r'\[(\d+)\]'
+    nb_c, firstc_pos, lastc_pos = count_chars(letter_seq)
 
-    # Start with the longest word in the center
-    words_sorted = sorted(words, key=lambda w: -len(w))
-    if not words_sorted:
-        return Puzzle(0, 0, []), []
+    if firstc_pos > 0:
+        left_opt_c = r'(\w{0,' + str(firstc_pos) + '}'
+        result_list = [pfix, left_opt_c, ]
+    else:
+        result_list = [pfix, '(', ]
 
-    # Grid size guess (will expand as needed)
-    max_word_len = max(len(w) for w in words_sorted)
-    grid_w = grid_h = max(2 * max_word_len, 10)
-    grid = [['' for _ in range(grid_w)] for _ in range(grid_h)]
-    offset_r = offset_c = grid_w // 2
-
-    # Place the first word horizontally in the middle
-    first_word = words_sorted[0]
-    start_r = offset_r
-    start_c = offset_c - len(first_word) // 2
-    for i, ch in enumerate(first_word):
-        grid[start_r][start_c + i] = ch
-    placed_words.append(
-        WordSpec(
-            word=first_word,
-            clue=clues[first_word],
-            position=(start_r + 1, start_c + 1),
-            direction='across',
-            number=1
-        )
-    )
-    used_words.add(first_word)
-
-    # Helper: find all positions of a letter in the grid
-    def find_letter_positions(letter):
-        positions = []
-        for r in range(grid_h):
-            for c in range(grid_w):
-                if grid[r][c] == letter:
-                    positions.append((r, c))
-        return positions
-
-    # Cell orientations: (row, col): set of orientations ('across', 'down')
-    cell_orientations = {}
-
-    # Place remaining words
-    word_number = 2
-    for word in words_sorted[1:]:
-        best = None  # (score, row, col, direction, cross_idx, word_idx)
-        for direction in ['across', 'down']:
-            for idx, ch in enumerate(word):
-                positions = find_letter_positions(ch)
-                for (r, c) in positions:
-                    if direction == 'across':
-                        start_r = r
-                        start_c = c - idx
-                        if start_c < 0 or start_c + len(word) > grid_w:
-                            continue
-                        # Check for conflicts and at least one crossing
-                        conflict = False
-                        crossing = False
-                        crossing_count = 0
-                        for i, letter in enumerate(word):
-                            rr = start_r
-                            cc = start_c + i
-                            cell = grid[rr][cc]
-                            cell_orient = cell_orientations.get((rr, cc), set())
-                            if cell == '':
-                                # Check for adjacent word (no two words side by side)
-                                if (cc > 0 and grid[rr][cc-1] != '') or (cc < grid_w-1 and grid[rr][cc+1] != ''):
-                                    if i == 0 or i == len(word)-1:
-                                        pass  # allow at ends
-                                    else:
-                                        conflict = True
-                                        break
-                                if (rr > 0 and grid[rr-1][cc] != '') or (rr < grid_h-1 and grid[rr+1][cc] != ''):
-                                    pass  # allow vertical adjacency
-                            elif cell != letter:
-                                conflict = True
-                                break
-                            else:
-                                # Already occupied: must be a crossing with the other orientation
-                                if direction in cell_orient:
-                                    conflict = True
-                                    break
-                                crossing = True
-                                crossing_count += 1
-                        if not conflict and crossing and crossing_count == 1:
-                            # Score: more crossings is better, more compact is better
-                            score = 1  # Only one crossing allowed
-                            if best is None:
-                                best = (score, start_r, start_c, 'across', idx)
-                    else:  # down
-                        start_r = r - idx
-                        start_c = c
-                        if start_r < 0 or start_r + len(word) > grid_h:
-                            continue
-                        conflict = False
-                        crossing = False
-                        crossing_count = 0
-                        for i, letter in enumerate(word):
-                            rr = start_r + i
-                            cc = start_c
-                            cell = grid[rr][cc]
-                            cell_orient = cell_orientations.get((rr, cc), set())
-                            if cell == '':
-                                if (rr > 0 and grid[rr-1][cc] != '') or (rr < grid_h-1 and grid[rr+1][cc] != ''):
-                                    if i == 0 or i == len(word)-1:
-                                        pass
-                                    else:
-                                        conflict = True
-                                        break
-                                if (cc > 0 and grid[rr][cc-1] != '') or (cc < grid_w-1 and grid[rr][cc+1] != ''):
-                                    pass
-                            elif cell != letter:
-                                conflict = True
-                                break
-                            else:
-                                if direction in cell_orient:
-                                    conflict = True
-                                    break
-                                crossing = True
-                                crossing_count += 1
-                        if not conflict and crossing and crossing_count == 1:
-                            score = 1
-                            if best is None:
-                                best = (score, start_r, start_c, 'down', idx)
-        if best:
-            _, r, c, direction, _ = best
-            if direction == 'across':
-                for i, letter in enumerate(word):
-                    grid[r][c + i] = letter
-                    cell_orientations.setdefault((r, c + i), set()).add('across')
-                placed_words.append(
-                    WordSpec(
-                        word=word,
-                        clue=clues[word],
-                        position=(r + 1, c + 1),
-                        direction='across',
-                        number=word_number
-                    )
-                )
-            else:
-                for i, letter in enumerate(word):
-                    grid[r + i][c] = letter
-                    cell_orientations.setdefault((r + i, c), set()).add('down')
-                placed_words.append(
-                    WordSpec(
-                        word=word,
-                        clue=clues[word],
-                        position=(r + 1, c + 1),
-                        direction='down',
-                        number=word_number
-                    )
-                )
-            used_words.add(word)
-            word_number += 1
+    counter_dash = 0
+    for i in range(firstc_pos, lastc_pos + 1):
+        if letter_seq[i] == '-':
+            counter_dash += 1
         else:
-            excluded_words.append(word)
+            if counter_dash > 0:
+                result_list.append(r'\w{' + str(counter_dash) + '}')
+            result_list.append(letter_seq[i])
+            counter_dash = 0
 
-    # Find bounds of used grid
-    min_r, max_r, min_c, max_c = grid_h, 0, grid_w, 0
-    for r in range(grid_h):
-        for c in range(grid_w):
-            if grid[r][c] != '':
-                min_r = min(min_r, r)
-                max_r = max(max_r, r)
-                min_c = min(min_c, c)
-                max_c = max(max_c, c)
-    # Adjust for orientation
-    if orientation == "landscape" and (max_r - min_r) > (max_c - min_c):
-        # Transpose grid (not implemented for simplicity)
-        pass
+    if lastc_pos < len(letter_seq) - 1:
+        right_opt_c = r'\w{0,' + str(len(letter_seq)-1-lastc_pos) + '})'
+        result_list.append(right_opt_c)
+    else:
+        result_list.append(')')
+    result = ''.join(result_list) + pfix
+    return result
 
-    # Shift all positions so top-left is (1,1)
-    for ws in placed_words:
-        ws.position = (ws.position[0] - min_r, ws.position[1] - min_c)
+def gen_patterns(letter_seq: str, pos): 
+    """Generate all possible regex patterns holding at least one letter 
+    from the given letter sequence, starting at position pos in grid 
+    (i.e. where we can begin to fill the grid) 
 
-    rows = max_r - min_r + 1
-    cols = max_c - min_c + 1
-
-    # Renumber clues in reading order
-    placed_words.sort(key=lambda ws: (ws.position[0], ws.position[1]))
-    for idx, ws in enumerate(placed_words, 1):
-        ws.number = idx
-
-    return Puzzle(rows=rows, cols=cols, words=placed_words), excluded_words
-
-
-
-def generate_words_clues(
-    num_words: int,
-    language: str,
-    theme: str,
-    difficulty: str,
-    llm_endpoint: str,
-    api_key: str = None
-) -> List[Dict[str, str]]:
+    Args:
+        letter_seq: letters pattern, e.g. '--R----G--E'
+        pos: Position index in grid where letter_seq starts (row or col)
+        
+    Yields: Tuples of (pattern_regex, pos)
     """
-    Returns: List of dicts: [{'word': ..., 'clue': ...}, ...]
+    yield (get_regex(letter_seq), pos)
+    nb_chars, first_char_pos, last_char_pos = count_chars(letter_seq)
+    
+    if nb_chars > 1:
+        # trim "right":
+        sub_seq = letter_seq[:last_char_pos-1]
+        if len(sub_seq) > 1:
+            yield from gen_patterns(sub_seq, pos=pos)
+        # trim "left"
+        new_pos = pos + first_char_pos + 2
+        sub_seq = letter_seq[first_char_pos+2:]
+        if len(sub_seq) > 1:
+            yield from gen_patterns(sub_seq, pos=new_pos)
+
+
+@dataclass(order=True)
+class Word:
+    word: str
+    # as appear in grid (capital, non-accented, etc..)
+    canonical: str = None
+    clue: str = None
+    # 0-based coordinates, top-left origin
+    start_row: int = None
+    start_col: int = None
+    # 0=across, 1=down
+    direction: int = None
+
+    def __post_init__(self):
+        # TODO: dev funt to remove accent and capitalize
+        # as appearing in Grid
+        self.canonical = self.word.upper()
+        self.size = len(self.canonical)
+    
+    def place_word(self, row: int, col: int, direction: int):
+        self.start_row = row
+        self.start_col = col
+        self.direction = direction
+    
+    def blocked_span(self, padding=False) -> tuple[int,int]:
+        """Return blocked span of this word optionnally encompassing 
+        one letter before and after the word itself (padding=True).
+        """
+        if self.start_row is None or self.start_col is None or self.direction is None:
+            return None
+        if self.direction == 0:  # across
+            start = self.start_col - (1 if padding and self.start_col > 0 else 0)
+            end = self.start_col + self.size + (1 if padding else 0)
+        else:  # down
+            start = self.start_row - (1 if padding and self.start_row > 0 else 0)
+            end = self.start_row + self.size + (1 if padding else 0)
+        return (start, end)
+        
+    
+    def letter_at(self, cell_row, cell_col) -> str:
+        """Return letter at given cell (row, col) if part of this word, else None.
+        """
+        if self.start_row and self.start_col and (self.direction in (0,1)):
+            if self.direction == 0:  # across
+                if cell_row == self.start_row and self.start_col <= cell_col < self.start_col + self.size:
+                    return self.canonical[cell_col - self.start_col]
+            else:  # down
+                if cell_col == self.start_col and self.start_row <= cell_row < self.start_row + self.size:
+                    return self.canonical[cell_row - self.start_row]
+
+
+
+class Puzzle:
+    def __init__(self, grid_size: int, available_words: list[tuple[str,str]]):
+        """Initialize Puzzle instance.
+        
+        Args:
+            grid_size: Size of grid (square grid_size x grid_size)
+            available_words: List of tuples of (word, clue)
+        """
+        self.id: str = generate_puzzle_id()
+        self.grid_size = grid_size      
+        self.available_words: List[Word] = []
+        self.min_size_word = self.grid_size
+        for i, w in enumerate(available_words):
+            if len(w[0]) < self.min_size_word:
+                self.min_size_word = len(w[0])
+            if len(w[0]) <= self.grid_size:
+                self.available_words.append(Word(word=w[0], clue=w[1]))
+        self.available_words.sort(key=lambda x: len(x.word), reverse=True)
+        # '[3]WORDX[7]WORDY...'
+        self.available_wordseq = ''.join([f"[{i}]{w.canonical}" for i, w in enumerate(self.available_words)])
+
+        # puzzle number in store
+        self.no: int = None
+        
+        # {direction: {col/row-index: [Wordx, ...]}}
+        self.placed_words: Dict[int, Dict[int, List[Word]]] = {}
+        # {direction: [col/row-indexes]}, initially all grid available
+        self.blocked_indexes: dict[int:list[int]] = {0:[], 1:[]}
+
+
+    def derive_letter_sequences(self, direction: int, index: int) -> tuple[list[str], list[str]]:
+        """Derive letter sequences for given row/col index according to direction with '-' fillable markers, 
+        '0' blocked markers, and 'L' letter from already perpendicular placed words.
+        """
+        frozen_spans = [w.blocked_span(padding=True) for w in self.placed_words.get(direction, {}).get(index, [])]
+        left_frozen_spans = [w.blocked_span() for w in self.placed_words.get(direction, {}).get(index-1, [])]
+        right_frozen_spans = [w.blocked_span() for w in self.placed_words.get(direction, {}).get(index+1, [])]
+
+        # fillout cells with '-' (fillable marker)
+        l_seq = ['-' for _ in range(self.grid_size)]
+        # overwrite cells within blocked spans
+        for span in frozen_spans + left_frozen_spans + right_frozen_spans:
+            l_seq[span[0]:span[1]] = ['0' for _ in range(span[0], span[1])]
+
+        # overwrite cells with letters from perpendicular words
+        for i, l in enumerate(l_seq):
+            if l == '-':
+                index_c = index if direction == 1 else i
+                index_r = i if direction == 1 else index
+                letter_crossed = [w.letter_at(index_r, index_c) for w in self.placed_words.get(1 - direction, {}).get(i, []) if w.letter_at(index_r, index_c)]
+                assert len(letter_crossed) <= 1
+                if len(letter_crossed) == 1:
+                    l_seq[i] = letter_crossed[0]
+
+        return ''.join(l_seq)
+ 
+
+    def fillout_grid(self):
+        """Randonly select a next row or col, get its letter_sequence consecutive pattens
+          and try to find a matching word
+        
+        Shoud probably prioritize the one with longest letter_seq available!!
+        ..to be experimented!
+        """
+        
+        # select randon col or row not in self.blocked_indexes
+  
+        # get letter sequence for that col/row --> self.derive_letter_sequences()
+
+        # iterate over all possible patterns (skipping blocked spans)
+
+            # if no patters larger in size than min_size_word --> add to self.complete_indexes
+    
+            # otherwise try to find a matching word in available_words, if no match for all possible pattern --> add to self.complete_indexes
+        
+            # if match found --> call self.place_word
+
+
+
+    def find_matches(self, letter_seq: str) -> Optional[tuple[int, str]]:
+        """Find and return first word fitting the row/col letter_seq
+
+        Args:
+            remaining_words: 
+            where # indicates sequence number in self.available_words
+            letter_seq: Letter sequence to fit for some row/col in grid'
+        
+        Returns:
+            Tuples of (word_n, matched_word) where word_n is sequence# in available_words.
+        """
+        for p_regex in self.gen_patterns(letter_seq):
+            match = re.search(p_regex, self.available_wordseq)
+            if match:
+                word_n = int(match.group(1))
+                matched_word = match.group(2)
+                return word_n, matched_word
+
+    def place_word(self, word_n: int, row: int, col: int, direction: int):
+        """Place word identified by word_n at given row, col, direction in grid.
+
+        Args:
+            word_n: Sequence number of word in available_words
+            row: 0-based row index
+            col: 0-based col index
+            direction: 0=across, 1=down
+        """
+        word = self.available_words[word_n]
+        word.place_word(row, col, direction)
+        self.placed_words.setdefault(direction, {}).setdefault((col if direction==1 else row), []).append(word)
+        # refresh available_wordseq 
+
+        # refresh self.blocked_indexes according to row/col having no perpendicular words placed yet 
+
+
+    # probably not needed
+    def cell_status(self, row: int, col: int, direction):
+        """Return status hint at given cell (row, col) according to direction:
+        Returns:
+        """
+        # 1st check word in same direction        
+        words_in_direction = self.placed_words.get(direction, {}).get(col if direction==1 else row, [])            
+        for w in words_in_direction:
+            if w.in_frozen_span(row, col):
+                return 0
+        # check if letter present from words in other direction
+        other_direction = 1 - direction
+        words_in_other_direction = self.placed_words.get(other_direction, {}).get(col if other_direction==1 else row, [])
+        
+
+            
+
+            
+
+
+def generate_grid_pattern(current_puzzle: Puzzle, direction: int):
+    """Yield all possible pattern of next words locations in the grid
+
+    Args:
+        current_puzzle: Current Puzzle instance with words placed
+        direction: 0=across, 1=down
+    Yields:
+        Tuples of (row, col, pattern) where pattern is a regex string
+        from longest pattern to shortest.
     """
-    # TODO: Implement LLM call with prompt and parameters
     pass
 
 
-def mock_generate_words_clues(num_words: int) -> List[Dict[str, str]]:
-    """
-    Generate mock English words and dummy clues for testing.
-    """
-    word_list = [
-        "python", "kivy", "crossword", "puzzle", "grid", "clue", "letter", "cell",
-        "row", "column", "theme", "logic", "random", "sample", "word", "test",
-        "input", "output", "button", "label", "window", "screen", "color", "store",
-        "data", "event", "focus", "timer", "widget", "layout", "scroll", "popup",
-        "float", "box", "app", "main", "domain", "service", "ai", "generate",
-        "validate", "solution", "orientation", "number", "length", "phone", "desktop",
-        "storage", "history", "previous", "view", "finish", "help", "select", "randomize",
-        "difficulty", "theme", "language", "english", "advanced", "basic", "intermediate",
-        "challenge", "fun", "play", "game", "user", "interface", "design", "screen",
-        "touch", "keyboard", "mouse", "click", "highlight", "hint", "score", "time",
-        "record", "save", "load", "delete", "list", "entry", "field", "value", "dict",
-        "store", "json", "file", "open", "close", "read", "write", "update", "remove",
-        "logic", "matrix", "vector", "object", "method", "class", "function", "module",
-        "package", "import", "export", "compile", "run", "execute", "thread", "process",
-        "memory", "cache", "buffer", "stream", "socket", "network", "protocol", "server",
-        "client", "request", "response", "route", "path", "url", "http", "https", "ftp",
-        "ssh", "encrypt", "decrypt", "secure", "token", "auth", "login", "logout", "session",
-        "cookie", "header", "body", "json", "xml", "yaml", "csv", "parse", "serialize",
-        "deserialize", "encode", "decode", "compress", "decompress", "archive", "extract"
-    ]
 
-    # Filter for length and uniqueness
-    filtered = [w for w in set(word_list) if 3 <= len(w) <= 25]
-    if len(filtered) < num_words:
-        num_words = len(filtered)
-    selected = random.sample(filtered, num_words)
 
-    # Return as list of dicts with dummy clues
-    return [{"word": w.upper(), "clue": f"Dummy clue for {w}."} for w in selected]
+class PuzzleBuilder():
+    def __init__(self, rows, cols, wordlist):
+        self.rows = rows
+        self.cols = cols
+        self.min_size = min(rows, cols)
+        wordlist.sort(key=len, reverse=True)
+        self.wordlist_sorted = [Word(word=w) for w in wordlist if len(w) <= self.min_size]
+        
+
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()
+    
 
