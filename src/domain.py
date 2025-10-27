@@ -1,7 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from functools import cached_property
+from functools import cache, cached_property
 from operator import itemgetter
 import re
 import bisect
@@ -118,22 +118,20 @@ class Word:
         self.start_col = col
         self.direction = direction
     
-    # @cached_property voir si on peut utiliser cela si la fct utilise des args
-    def blocked_span(self, padding=False) -> tuple[int,int]:
-        """Return blocked span of this word (start-index, end-index) both inclusive. 
-        Use padding=True to include one cell before and after the word itsel.
+    # @cache TODO: test fail when using cache decorator
+    def blocked_span(self, padding=False) -> list[int]:
+        """Return blocked span of this word as list[start-index, end-index] both inclusive. 
+        Use padding=True to include one cell before and after the word itself.
         """
         if self.direction == 0:
             start = self.start_col - (1 if padding and self.start_col > 0 else 0)
             end = self.start_col + self.size - 1 + (1 if padding else 0)
-            return (start, end)
+            return list(range(start, end+1))
         elif self.direction == 1:
             start = self.start_row - (1 if padding and self.start_row > 0 else 0)
             end = self.start_row + self.size - 1 + (1 if padding else 0)
-            return (start, end)
-    # to be cached 
-    def blocked_span_list(self):
-        return list(range(self.blocked_span()[0], self.blocked_span()[1]+1))
+            return list(range(start, end+1))
+    
        
     def letter_at(self, cell_row, cell_col) -> str:
         """Return letter at given cell (row, col) if part of this word, else None.
@@ -167,56 +165,74 @@ class Puzzle:
         # '[3]WORDX[7]WORDY...'
         self.available_wordseq = ''.join([f"[{i}]{w.canonical}" for i, w in enumerate(self.available_words)])
 
-    
         # {direction: {col/row-index: [Wordx, ...]}}
         self.placed_words: dict[int, dict[int, list[Word]]] = {}
         
-        # 2 convenient structures used for optimization {direction: [col/row-indexes]}
-        # initially no index is blocked
+        # convenient structures useful for optimization
+        self.grid = [['-' for _ in range(self.grid_size)] for _ in range(self.grid_size)]
+        # where no word can fit into remaining patterns in index
         self.blocked_indexes: dict[int:list[int]] = {0:[], 1:[]}
-        # and all indexes empty
+        # where no letter present to attach new word in index
         self.empty_indexes: dict[int:list[int]] = {0:list(range(self.grid_size)), 
                                                    1:list(range(self.grid_size))}
-
     
     def _get_fullpattern(self, direction: int, index: int):
         """Derive full pattern for given row/col index and direction, 
         with '-' fillable markers, '0' blocked markers, and 'X' letter from perpendicular placed words.
         """
-        # fillout cells with '-' (fillable marker)
-        fullpattern = ['-' for _ in range(self.grid_size)]
+        if direction == 0:
+            fullpattern = [self.grid[index][c] for c in range(self.grid_size)]
+        else:
+            fullpattern = [self.grid[r][index] for r in range(self.grid_size)]
 
-        # add letter from perpendicular placed words (before blocking cell)
-        for i, l in enumerate(fullpattern):
-            if l == '-':
-                index_c = index if direction == 1 else i
-                index_r = i if direction == 1 else index
-                letter_crossed = [w.letter_at(index_r, index_c) 
-                                  for w in self.placed_words.get(1 - direction, {}).get(i, []) if w.letter_at(index_r, index_c)]
-                assert len(letter_crossed) <= 1
-                if len(letter_crossed) == 1:
-                    fullpattern[i] = letter_crossed[0]
+        if fullpattern.count('-') == self.grid_size:
+            raise ValueError("No letters in fullpattern")
 
-        # block cell
-        block_spans = [w.blocked_span(padding=True) for w in self.placed_words.get(direction, {}).get(index, [])]
-        for span in block_spans:
-            fullpattern[span[0]:span[1]+1] = ['0' for _ in range(span[0], span[1]+1)]
+        # block cell from words placed in this direction on same col/row (index) marked as '0'
+        block_cells = []
+        _ = [ block_cells.extend(w.blocked_span(padding=True)) for w in self.placed_words.get(direction, {}).get(index, [])]
         
-        # left/right spans only block when no letter present (from perpendicular placed words)
-        b_cells = []
-        [ b_cells.extend(w.blocked_span_list()) for w in self.placed_words.get(direction, {}).get(index-1, []) ]
-        [ b_cells.extend(w.blocked_span_list()) for w in self.placed_words.get(direction, {}).get(index+1, []) ]
-        # block cells with no letters
-        for i in b_cells:
-            if fullpattern[i] == '-':
-                fullpattern[i] = '0'
+        # block cell from words "left" col/row 
+        left_spans = []
+        if index > 0:
+            _ = [ left_spans.extend(w.blocked_span()) for w in self.placed_words.get(direction, {}).get(index-1, []) ]
+        
+        right_spans = []
+        # block cell from words on "rigt" col/row'
+        if index < self.grid_size - 1:
+            _ = [ right_spans.extend(w.blocked_span()) for w in self.placed_words.get(direction, {}).get(index+1, []) ]
+
+        # go over each cell in fullpattern and mark blocked ones as '0'
+        for cell_i in range(self.grid_size):
+            if cell_i in block_cells:
+                fullpattern[cell_i] = '0'
+            elif fullpattern[cell_i] == '-':
+                # left/right spans only block when no letter present (from perpendicular placed words)
+                if cell_i in left_spans or cell_i in right_spans:
+                    fullpattern[cell_i] = '0'
+                # block also cell neighbor of a word placed perpendicularly
+                if direction == 1:
+                    # "left"
+                    if index >= 2 and self.grid[cell_i][index-1] != '-' and self.grid[cell_i][index-2] != '-': 
+                        fullpattern[cell_i] = '0'
+                    # "right"
+                    elif index <= self.grid_size - 3 and self.grid[cell_i][index+1] != '-' and self.grid[cell_i][index+2] != '-':
+                        fullpattern[cell_i] = '0'
+                else:  # direction == 0
+                    # "left"
+                    if index >= 2 and self.grid[index-1][cell_i] != '-' and self.grid[index-2][cell_i] != '-': 
+                        fullpattern[cell_i] = '0'
+                    # "right"
+                    elif index <= self.grid_size - 3 and self.grid[index+1][cell_i] != '-' and self.grid[index+2][cell_i] != '-':
+                        fullpattern[cell_i] = '0'
         return ''.join(fullpattern)
+
 
     def get_letter_sequences(self, direction: int, index: int) -> list[tuple[str,int]]:
         
         fullpattern = self._get_fullpattern(direction, index)  
         # no letter to attach new word 
-        if (fullpattern.count('-') + fullpattern.count('0')) == self.grid_size:
+        if fullpattern.count('-') + fullpattern.count('0') == self.grid_size:
             return []
 
         letter_sequences : list[tuple[str,int]] = []
@@ -331,6 +347,12 @@ class Puzzle:
         word = self.available_words[word_n]
         word.set_position(row, col, direction)
         self.placed_words.setdefault(direction, {}).setdefault((col if direction==1 else row), []).append(word)
+        # update grid
+        for i in range(word.size):
+            if direction == 0:
+                self.grid[row][col + i] = word.canonical[i]
+            else:
+                self.grid[row + i][col] = word.canonical[i]
         # refresh available_wordseq 
         s_index = self.available_wordseq.index(f'[{word_n}]')
         e_index = self.available_wordseq.find('[', start=s_index+1)
@@ -350,25 +372,7 @@ class Puzzle:
         return (len(self.blocked_indexes[0]) == self.grid_size) and (len(self.blocked_indexes[1]) == self.grid_size)
     
     def __str__(self):
-        all_cells = [[ '-' for _ in range(self.grid_size)] for _ in range(self.grid_size)]
-        # rows
-        for r in range(self.grid_size):
-            for w in self.placed_words.get(0,{}).get(r,[]):
-                print(f'je suis le mot={w} across avec blockspan={w.blocked_span()}')
-                for i in w.blocked_span_list():
-                    all_cells[r][i] = w.letter_at(r,i)
-        # columns
-        for c in range(self.grid_size):
-            for w in self.placed_words.get(1,{}).get(c,[]):
-                print(f'je suis le mot={w} down avec blockspan={w.blocked_span()}')
-                for j in w.blocked_span_list():
-                    if all_cells[j][c] == '-':
-                        all_cells[j][c] = w.letter_at(j,c)
-                    else:
-                        assert all_cells[j][c] == w.letter_at(j,c)
-        # print(f"je suis all_cells {all_cells}")
-        all_lines = [' '.join(line) for line in all_cells]
-        return '\n'.join(all_lines)
+        return '\n'.join([' '.join(row) for row in self.grid])
 
 #     def to_dict(self):
 #         return {

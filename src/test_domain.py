@@ -2,7 +2,7 @@ import pytest
 import domain
 
 
-def tst_count_chars():
+def test_count_chars():
     try:
         ret = domain.count_chars('-------')
         assert False, "Expected ValueError for no letters"
@@ -17,7 +17,7 @@ def tst_count_chars():
 
 
 
-def tst_get_regex():
+def test_get_regex():
     # en empty grid not valid (for 1st word is handled exceptionnally) 
     try:
         ret = domain.get_regex('-------')
@@ -32,7 +32,7 @@ def tst_get_regex():
     assert ret == r'\[(\d+)\](F\w{1}ß\w{3}K\w{3}中\w{0,2})\[(\d+)\]'
 
 
-def tst_gen_patterns():
+def test_gen_patterns():
 
     try:
         for p in domain.gen_patterns('------', 0, 2):
@@ -82,7 +82,7 @@ def tst_gen_patterns():
     assert set(patterns) == set(expected_patterns)
 
 
-def tst_word():
+def test_word():
     word = domain.Word(word='Test')
     word.set_position(row=1, col=2, direction=0)
     assert word.letter_at(0,0) is None
@@ -92,24 +92,25 @@ def tst_word():
     assert word.letter_at(1,3) == 'E'
     assert word.letter_at(1,5) == 'T'
     assert word.canonical == 'TEST'
-    assert word.blocked_span(padding=False) == (2,5)
-    assert word.blocked_span_list() == [2,3,4,5]
-    assert word.blocked_span(padding=True) == (1,6)
+    
+    assert word.blocked_span(padding=False) == [2,3,4,5]
+    assert word.blocked_span(padding=True) == [1,2,3,4,5,6]
 
     word.set_position(row=0, col=0, direction=1)
     assert word.letter_at(0,0) == 'T'
     assert word.letter_at(3,0) == 'T'
     assert word.letter_at(4,0) is None
-    assert word.blocked_span(padding=False) == (0,3)
-    assert word.blocked_span_list() == [0,1,2,3]
-    assert word.blocked_span(padding=True) == (0,4)
-
-def ppuzzle(title, puzzle):
-    print('\n' + title + ':') 
-    print(puzzle)
+    assert word.blocked_span(padding=False) == [0,1,2,3]
+    assert word.blocked_span(padding=True) == [0,1,2,3,4]
 
 
-def test_puzzle():
+
+
+def tst_puzzle():
+    def ppuzzle(title, puzzle):
+        print('\n' + title + ':') 
+        print(puzzle)
+
     puzzle = domain.Puzzle(grid_size=9, available_words=[('Word', ''), ('WTester', ''),
                                                           ('Bada', ''), ('Ecolo',''),
                                                           ('Sm',''), ('Tooooolonnnnnnnggg', '')])
@@ -121,7 +122,7 @@ def test_puzzle():
     try:
         puzzle._get_fullpattern(direction=1, index=2)
         assert False
-    except Exception:
+    except ValueError:
         pass
 
     #######################################################################
