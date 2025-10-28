@@ -102,8 +102,8 @@ class Word:
     canonical: str = None
     clue: str = None
     # 0-based coordinates, top-left origin
-    start_row: int = None
-    start_col: int = None
+    row: int = None
+    col: int = None
     # 0=across, 1=down
     direction: int = None
 
@@ -114,8 +114,8 @@ class Word:
         self.size = len(self.canonical)
     
     def set_position(self, row: int, col: int, direction: int):
-        self.start_row = row
-        self.start_col = col
+        self.row = row
+        self.col = col
         self.direction = direction
     
     # @cache TODO: test fail when using cache decorator
@@ -124,12 +124,12 @@ class Word:
         Use padding=True to include one cell before and after the word itself.
         """
         if self.direction == 0:
-            start = self.start_col - (1 if padding and self.start_col > 0 else 0)
-            end = self.start_col + self.size - 1 + (1 if padding else 0)
+            start = self.col - (1 if padding and self.col > 0 else 0)
+            end = self.col + self.size - 1 + (1 if padding else 0)
             return list(range(start, end+1))
         elif self.direction == 1:
-            start = self.start_row - (1 if padding and self.start_row > 0 else 0)
-            end = self.start_row + self.size - 1 + (1 if padding else 0)
+            start = self.row - (1 if padding and self.row > 0 else 0)
+            end = self.row + self.size - 1 + (1 if padding else 0)
             return list(range(start, end+1))
     
        
@@ -137,11 +137,11 @@ class Word:
         """Return letter at given cell (row, col) if part of this word, else None.
         """
         if self.direction == 0:  # across
-            if cell_row == self.start_row and self.start_col <= cell_col < self.start_col + self.size:
-                return self.canonical[cell_col - self.start_col]
+            if cell_row == self.row and self.col <= cell_col < self.col + self.size:
+                return self.canonical[cell_col - self.col]
         elif self.direction == 1:  # down
-            if cell_col == self.start_col and self.start_row <= cell_row < self.start_row + self.size:
-                return self.canonical[cell_row - self.start_row]
+            if cell_col == self.col and self.row <= cell_row < self.row + self.size:
+                return self.canonical[cell_row - self.row]
 
 
 class Puzzle:
@@ -155,6 +155,7 @@ class Puzzle:
         self.id: str = generate_puzzle_id()
         self.grid_size = grid_size      
         self.available_words: list[Word] = []
+        self.grid_empty = True
         self.min_size_word = self.grid_size
         for i, w in enumerate(available_words):
             if len(w[0]) < self.min_size_word:
@@ -186,7 +187,7 @@ class Puzzle:
             fullpattern = [self.grid[r][index] for r in range(self.grid_size)]
 
         if fullpattern.count('-') == self.grid_size:
-            raise ValueError("No letters in fullpattern")
+            raise Exception("No letters in fullpattern in direction {}, index {}".format(direction, index))
 
         # block cell from words placed in this direction on same col/row (index) marked as '0'
         block_cells = []
@@ -210,20 +211,20 @@ class Puzzle:
                 # left/right spans only block when no letter present (from perpendicular placed words)
                 if cell_i in left_spans or cell_i in right_spans:
                     fullpattern[cell_i] = '0'
-                # block also cell neighbor of a word placed perpendicularly
+                # block also cell neighbor of an end/start of a word placed perpendicularly
                 if direction == 1:
                     # "left"
-                    if index >= 2 and self.grid[cell_i][index-1] != '-' and self.grid[cell_i][index-2] != '-': 
+                    if index >= 2 and self.grid[cell_i][index-1] != '-': 
                         fullpattern[cell_i] = '0'
                     # "right"
-                    elif index <= self.grid_size - 3 and self.grid[cell_i][index+1] != '-' and self.grid[cell_i][index+2] != '-':
+                    elif index <= self.grid_size - 3 and self.grid[cell_i][index+1] != '-':
                         fullpattern[cell_i] = '0'
                 else:  # direction == 0
                     # "left"
-                    if index >= 2 and self.grid[index-1][cell_i] != '-' and self.grid[index-2][cell_i] != '-': 
+                    if index >= 2 and self.grid[index-1][cell_i] != '-': 
                         fullpattern[cell_i] = '0'
                     # "right"
-                    elif index <= self.grid_size - 3 and self.grid[index+1][cell_i] != '-' and self.grid[index+2][cell_i] != '-':
+                    elif index <= self.grid_size - 3 and self.grid[index+1][cell_i] != '-':
                         fullpattern[cell_i] = '0'
         return ''.join(fullpattern)
 
@@ -253,13 +254,13 @@ class Puzzle:
         Shoud probably prioritize the one with longest letter_seq available!!
         ..to be experimented!
         """
+        start_time = time.time()
         self.place_first_word()
         # randomly fill out rows/cols until blocked or timeout
-        start_time = time.time()
-        while not self.is_blocked() or time.time() - start_time < timeout:
+        while not self.is_blocked():
             direction = random.choice([0,1])
             available_indexes = [i for i in range(self.grid_size) 
-                                 if i not in self.blocked_indexes[direction] and i not in self.empty_indexes[1-direction]]
+                                 if i not in self.blocked_indexes[direction] and i not in self.empty_indexes[direction]]
             if len(available_indexes) == 0:
                 direction = 1 - direction
                 available_indexes = [i for i in range(self.grid_size) if i not in self.blocked_indexes[direction]]
@@ -323,7 +324,8 @@ class Puzzle:
     def place_first_word(self):
         """"place first word pickin randomly top-5 longest word
         """
-        if len(self.placed_words) == 0:    
+        if self.empty_grid:
+            # use first 5 longest words  
             first_w_i = random.randint(0, 4)
             first_w_len = len(self.available_words[first_w_i].canonical)
             assert first_w_len <= self.grid_size
@@ -334,6 +336,7 @@ class Puzzle:
                 self.place_word(word_n=first_w_i, row=index, col=other_index, direction=direction)
             else:
                 self.place_word(word_n=first_w_i, row=other_index, col=index, direction=direction)
+            self.empty_grid = False
 
     def place_word(self, word_n: int, row: int, col: int, direction: int):
         """Place word identified by word_n at given row, col, direction in grid.
@@ -355,16 +358,16 @@ class Puzzle:
                 self.grid[row + i][col] = word.canonical[i]
         # refresh available_wordseq 
         s_index = self.available_wordseq.index(f'[{word_n}]')
-        e_index = self.available_wordseq.find('[', start=s_index+1)
+        e_index = self.available_wordseq.find('[', s_index+1)
         if e_index == -1:
             e_index = len(self.available_wordseq)
         self.available_wordseq = self.available_wordseq[:s_index] + self.available_wordseq[e_index:]
         # no need to refresh self.blocked_indexes as this is done during solve() (index can be not full but no word match is found)
 
         # refresh self.empty_indexes
-        [ self.empty_indexes(1-direction).remove(i) for i in self.empty_indexes(1-direction) 
-                if i in word.blocked_span_list() ]
-
+        self.empty_indexes[1-direction] = [i for i in self.empty_indexes[1-direction] if i not in word.blocked_span() ]
+        return word
+    
 
     def is_blocked(self) -> bool:
         """Return True if puzzle can no longer be filled (all rows and cols blocked).
