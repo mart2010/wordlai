@@ -99,13 +99,13 @@ def gen_patterns(letter_seq: str, pos, min_size):
 class Word:
     word: str
     # as appear in grid (capital, non-accented, etc..)
-    canonical: str = None
-    clue: str = None
+    canonical: str = field(default=None, compare=False)
+    clue: str = field(default=None, compare=False)
     # 0-based coordinates, top-left origin
-    row: int = None
-    col: int = None
+    row: int = field(default=None, compare=False)
+    col: int = field(default=None, compare=False)
     # 0=across, 1=down
-    direction: int = None
+    direction: int = field(default=None, compare=False)
 
     def __post_init__(self):
         # TODO: dev funt to remove accent and capitalize
@@ -145,7 +145,7 @@ class Word:
 
 
 class Puzzle:
-    def __init__(self, grid_size: int, available_words: list[tuple[str,str]]):
+    def __init__(self, grid_size: int, words: list[tuple[str,str]]):
         """Initialize Puzzle instance.
         
         Args:
@@ -155,9 +155,8 @@ class Puzzle:
         self.id: str = generate_puzzle_id()
         self.grid_size = grid_size      
         self.available_words: list[Word] = []
-        self.grid_empty = True
         self.min_size_word = self.grid_size
-        for i, w in enumerate(available_words):
+        for i, w in enumerate(words):
             if len(w[0]) < self.min_size_word:
                 self.min_size_word = len(w[0])
             if len(w[0]) <= self.grid_size:
@@ -168,12 +167,13 @@ class Puzzle:
 
         # {direction: {col/row-index: [Wordx, ...]}}
         self.placed_words: dict[int, dict[int, list[Word]]] = {}
+        self.nb_placed_words = 0
         
         # convenient structures useful for optimization
         self.grid = [['-' for _ in range(self.grid_size)] for _ in range(self.grid_size)]
-        # where no word can fit into remaining patterns in index
+        # where no word is found to fit into remaining patterns
         self.blocked_indexes: dict[int:list[int]] = {0:[], 1:[]}
-        # where no letter present to attach new word in index
+        # where no letter present to attach new word
         self.empty_indexes: dict[int:list[int]] = {0:list(range(self.grid_size)), 
                                                    1:list(range(self.grid_size))}
     
@@ -232,9 +232,10 @@ class Puzzle:
     def get_letter_sequences(self, direction: int, index: int) -> list[tuple[str,int]]:
         
         fullpattern = self._get_fullpattern(direction, index)  
-        # no letter to attach new word 
+        
+        # special condition when temporarly blocked because no letter exist in sequence 
         if fullpattern.count('-') + fullpattern.count('0') == self.grid_size:
-            return []
+            return -1
 
         letter_sequences : list[tuple[str,int]] = []
         # split into seq of consecutive '-' and letter 'X' sub-patterns (unblocked) of min size     
@@ -255,61 +256,64 @@ class Puzzle:
         ..to be experimented!
         """
         start_time = time.time()
+        iter, iter_skip, iter_block = 0, 0, 0
         self.place_first_word()
         # randomly fill out rows/cols until blocked or timeout
+        previous_selection = (None, None)
         while not self.is_blocked():
-            direction = random.choice([0,1])
-            available_indexes = [i for i in range(self.grid_size) 
-                                 if i not in self.blocked_indexes[direction] and i not in self.empty_indexes[direction]]
-            if len(available_indexes) == 0:
-                direction = 1 - direction
-                available_indexes = [i for i in range(self.grid_size) if i not in self.blocked_indexes[direction]]
-                assert len(available_indexes) > 0
+            iter += 1
+            available_choices = [(d,i) for d in random.randint(0,1) 
+                                 for i in range(self.grid_size)
+                                 if i not in self.blocked_indexes[d] and i not in self.empty_indexes[d]]
+            selection = random.choice(available_choices)
+            the_direction = selection[0]
+            the_index = selection[1]
+
+            letter_seqs = self.get_letter_sequences(the_direction, the_index)
+
+            # skip identical consecutive selection 
+            if selection == previous_selection:
+               continue 
+            previous_selection = selection
             
-            #TODO complete logic here .. 
-            index = random.choice(available_indexes)
-            letter_seqs = self.derive_letter_sequences(direction, index).split('0')
+            # skip when temporarly blocked
+            if letter_seqs == -1:
+                iter_skip += 1
+                continue
             
+            # current selection is blocked
+            if len(letter_seqs) == 0:
+                self.mark_as_blocked(the_direction, the_index)
+                iter_block += 1
+                continue
+
+            matched = False
             for letter_seq in letter_seqs:
-                if len(letter_seq) < self.min_size_word:
-                    continue
+                if matched:
+                    break
+                match = self.find_matches(letter_seq[0])
+                if match:
+                    word_n, matched_word = match
+                    row, col = (the_index, letter_seq[1]) if the_direction == 0 else (letter_seq[1], the_index)
+                    self.place_word(word_n, row, col, the_direction)
+                    matched = True
 
-                complete_index = True
-                for p_regex, pos in self.gen_patterns(letter_seq, pos=0):
-                    nb_chars, first_char_pos, last_char_pos = count_chars(letter_seq)
-                    if nb_chars >= self.min_size_word:
-                        match_result = self.find_matches(letter_seq)
-                        if match_result:
-                            word_n, matched_word = match_result
-                            if direction == 0:
-                                self.place_word(word_n=word_n, row=index, col=pos, direction=direction)
-                            else:
-                                self.place_word(word_n=word_n, row=pos, col=index, direction=direction)
-                            complete_index = False
-                            break
-                if complete_index:
-                    self.blocked_indexes[direction].append(index)
-        
-        # select randon col or row not in self.blocked_indexes
-  
-        # get letter sequence for that col/row --> self.derive_letter_sequences()
+            if not matched:
+                self.mark_as_blocked(the_direction, the_index)
 
-        # iterate over all possible patterns (skipping blocked spans)
 
-            # if no patters larger in size than min_size_word --> add to self.complete_indexes
-    
-            # otherwise try to find a matching word in available_words, if no match for all possible pattern --> add to self.complete_indexes
-        
-            # if match found --> call self.place_word
+    def mark_as_blocked(self, direction, index):
+            assert index not in self.blocked_indexes[direction]
+            assert index not in self.empty_indexes[direction]
+            self.blocked_indexes[direction].append(index)
+
 
 
     def find_matches(self, letter_seq: str) -> Optional[tuple[int, str]]:
         """Find and return first word fitting the row/col letter_seq
 
-        Args:
-            remaining_words: 
-            where # indicates sequence number in self.available_words
-            letter_seq: Letter sequence to fit for some row/col in grid'
+        Args: 
+            letter_seq: Letter sequence to match for some row/col in grid'
         
         Returns:
             Tuples of (word_n, matched_word) where word_n is sequence# in available_words.
@@ -324,7 +328,7 @@ class Puzzle:
     def place_first_word(self):
         """"place first word pickin randomly top-5 longest word
         """
-        if self.empty_grid:
+        if self.nb_placed_words == 0:
             # use first 5 longest words  
             first_w_i = random.randint(0, 4)
             first_w_len = len(self.available_words[first_w_i].canonical)
@@ -336,7 +340,6 @@ class Puzzle:
                 self.place_word(word_n=first_w_i, row=index, col=other_index, direction=direction)
             else:
                 self.place_word(word_n=first_w_i, row=other_index, col=index, direction=direction)
-            self.empty_grid = False
 
     def place_word(self, word_n: int, row: int, col: int, direction: int):
         """Place word identified by word_n at given row, col, direction in grid.
@@ -350,12 +353,15 @@ class Puzzle:
         word = self.available_words[word_n]
         word.set_position(row, col, direction)
         self.placed_words.setdefault(direction, {}).setdefault((col if direction==1 else row), []).append(word)
+        self.nb_placed_words += 1
+
         # update grid
         for i in range(word.size):
             if direction == 0:
                 self.grid[row][col + i] = word.canonical[i]
             else:
                 self.grid[row + i][col] = word.canonical[i]
+
         # refresh available_wordseq 
         s_index = self.available_wordseq.index(f'[{word_n}]')
         e_index = self.available_wordseq.find('[', s_index+1)
@@ -366,13 +372,26 @@ class Puzzle:
 
         # refresh self.empty_indexes
         self.empty_indexes[1-direction] = [i for i in self.empty_indexes[1-direction] if i not in word.blocked_span() ]
+        
         return word
     
 
     def is_blocked(self) -> bool:
-        """Return True if puzzle can no longer be filled (all rows and cols blocked).
+        """Return True if puzzle can no longer be filled: 
+            - all rows and cols are blocked or empty
+            - no more words to be placed
+            - 
+
         """
-        return (len(self.blocked_indexes[0]) == self.grid_size) and (len(self.blocked_indexes[1]) == self.grid_size)
+        if (len(self.blocked_indexes[0]) == self.grid_size) and (len(self.blocked_indexes[1]) == self.grid_size):
+            return (True,0)
+        elif self.nb_placed_words == len(self.available_words):
+            return (True,-1)
+        # every non-blocked index are empty!
+        else:
+            for 
+        
+
     
     def __str__(self):
         return '\n'.join([' '.join(row) for row in self.grid])

@@ -111,12 +111,21 @@ def test_puzzle():
         print('\n' + title + ':') 
         print(puzzle)
 
-    puzzle = domain.Puzzle(grid_size=9, available_words=[('Word', ''), ('WTester', ''),
-                                                          ('Bada', ''), ('Ecolo',''),
-                                                          ('Sm',''), ('Tooooolonnnnnnnggg', '')])
+    a_words = [('Word', ''), ('WTester', ''), ('SorsdelaM', ''),
+               ('Bada', ''), ('Ecolos',''), (  'MotsdesFa',''),
+               ('small', ''), ('Datavault',''), ('Short',''), 
+               ('Sm',''), ('Tooooolonnnnnnnggg', ''),
+            ]
+
+    puzzle = domain.Puzzle(grid_size=9, words=a_words)
+                                                          
+    def word_idx(w):
+        the_w = domain.Word(word=w)
+        return puzzle.available_words.index(the_w)
+
     assert puzzle.min_size_word == 2
-    assert puzzle.available_wordseq == '[0]WTESTER[1]ECOLO[2]WORD[3]BADA[4]SM'
-    assert puzzle.available_words[2].canonical == 'WORD'
+    assert puzzle.available_wordseq == '[0]SORSDELAM[1]MOTSDESFA[2]DATAVAULT[3]WTESTER[4]ECOLOS[5]SMALL[6]SHORT[7]WORD[8]BADA[9]SM'
+    assert len(puzzle.available_words) == len(a_words) - 1
     
     ppuzzle('Initial empty', puzzle)
 
@@ -129,7 +138,7 @@ def test_puzzle():
     #######################################################################
     title = 'One word'
 
-    word = puzzle.place_word(2, row=2, col=3, direction=1)
+    word = puzzle.place_word(word_idx('Word'), row=2, col=3, direction=1)
     assert word.canonical == 'WORD'
     assert word.row == 2
     assert word.col == 3
@@ -138,7 +147,7 @@ def test_puzzle():
     ppuzzle(title, puzzle)
     assert puzzle.placed_words[word.direction][word.col][0] == word
     assert puzzle.empty_indexes.get(1-word.direction) == [i for i in range(9) if i not in word.blocked_span()]
-    assert puzzle.available_wordseq == '[0]WTESTER[1]ECOLO[3]BADA[4]SM'
+    assert puzzle.available_wordseq == '[0]SORSDELAM[1]MOTSDESFA[2]DATAVAULT[3]WTESTER[4]ECOLOS[5]SMALL[6]SHORT[8]BADA[9]SM'
 
     assert puzzle._get_fullpattern(word.direction, word.col) == '-000000--'
     assert puzzle.get_letter_sequences(word.direction, word.col) == []
@@ -158,12 +167,12 @@ def test_puzzle():
     #######################################################################
     title = 'Two with Bada'
     
-    bada = puzzle.place_word(3, row=5, col=1, direction=0)
+    bada = puzzle.place_word(word_idx('Bada'), row=5, col=1, direction=0)
     ppuzzle(title, puzzle)
     
     assert puzzle.placed_words[bada.direction][bada.row][0] == bada
     assert puzzle.empty_indexes.get(1-bada.direction) == [i for i in range(9) if i not in bada.blocked_span()]
-    assert puzzle.available_wordseq == '[0]WTESTER[1]ECOLO[4]SM'
+    assert puzzle.available_wordseq == '[0]SORSDELAM[1]MOTSDESFA[2]DATAVAULT[3]WTESTER[4]ECOLOS[5]SMALL[6]SHORT[9]SM'
     
     assert puzzle._get_fullpattern(bada.direction, bada.row) == '000000---'
     assert puzzle._get_fullpattern(bada.direction, bada.row-1) == '-00R0----'
@@ -176,12 +185,12 @@ def test_puzzle():
 
 
     #######################################################################
-    title = 'Three with ecolo'
+    title = 'Three with ecolos'
 
-    ecolo = puzzle.place_word(1, row=3, col=1, direction=0)
+    ecolos = puzzle.place_word(word_idx('Ecolos'), row=3, col=1, direction=0)
     ppuzzle(title, puzzle)
 
-    assert puzzle.available_wordseq == '[0]WTESTER[4]SM'
+    assert puzzle.available_wordseq == '[0]SORSDELAM[1]MOTSDESFA[2]DATAVAULT[3]WTESTER[5]SMALL[6]SHORT[9]SM'
 
     assert puzzle._get_fullpattern(1, 1) == '---E-B---'
     assert puzzle.get_letter_sequences(1, 1) == [('---E-B---',0)]
@@ -191,7 +200,7 @@ def test_puzzle():
     assert puzzle._get_fullpattern(1, 5) == '---O-0---'
     assert puzzle.get_letter_sequences(1, 5) == [('---O-',0)]
 
-    assert puzzle._get_fullpattern(0, 4) == '-00R00---'
+    assert puzzle._get_fullpattern(0, 4) == '-00R000--'
     assert puzzle.get_letter_sequences(0, 4) == []
 
 
