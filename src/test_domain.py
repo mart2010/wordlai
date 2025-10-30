@@ -150,7 +150,7 @@ def test_puzzle():
     assert puzzle.available_wordseq == '[0]SORSDELAM[1]MOTSDESFA[2]DATAVAULT[3]WTESTER[4]ECOLOS[5]SMALL[6]SHORT[8]BADA[9]SM'
 
     assert puzzle._get_fullpattern(word.direction, word.col) == '-000000--'
-    assert puzzle.get_letter_sequences(word.direction, word.col) == []
+    assert puzzle.get_letter_sequences(word.direction, word.col) == -1
 
     try: 
         puzzle._get_fullpattern(word.direction, word.col-1)

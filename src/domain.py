@@ -190,18 +190,11 @@ class Puzzle:
             raise Exception("No letters in fullpattern in direction {}, index {}".format(direction, index))
 
         # block cell from words placed in this direction on same col/row (index) marked as '0'
-        block_cells = []
-        _ = [ block_cells.extend(w.blocked_span(padding=True)) for w in self.placed_words.get(direction, {}).get(index, [])]
-        
+        block_cells = [ cells for w in self.placed_words.get(direction, {}).get(index, []) for cells in w.blocked_span(padding=True)]
         # block cell from words "left" col/row 
-        left_spans = []
-        if index > 0:
-            _ = [ left_spans.extend(w.blocked_span()) for w in self.placed_words.get(direction, {}).get(index-1, []) ]
-        
-        right_spans = []
+        left_spans = [ cells for w in self.placed_words.get(direction, {}).get(index-1, []) for cells in w.blocked_span() if index > 0 ]
         # block cell from words on "rigt" col/row'
-        if index < self.grid_size - 1:
-            _ = [ right_spans.extend(w.blocked_span()) for w in self.placed_words.get(direction, {}).get(index+1, []) ]
+        right_spans = [ cells for w in self.placed_words.get(direction, {}).get(index+1, []) for cells in w.blocked_span() if index < self.grid_size - 1 ]
 
         # go over each cell in fullpattern and mark blocked ones as '0'
         for cell_i in range(self.grid_size):
@@ -389,7 +382,7 @@ class Puzzle:
             return (True,-1)
         # every non-blocked index are empty!
         else:
-            for 
+            pass
         
 
     
