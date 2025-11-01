@@ -17,7 +17,6 @@ def generate_puzzle_id() -> str:
     seconds_since_midnight = int((now - midnight).total_seconds())
     return f"{now.year:04d}{now.month:02d}{now.day:02d}{seconds_since_midnight:05d}"
 
-
 def count_letters(s: str) -> int:
     """Count letters in s, return (nb_chars, firstchar_pos, lastchar_pos)
     string s is expected to contain letters and self.empty_marker (MUST NOT match regex \w)
@@ -28,7 +27,6 @@ def count_letters(s: str) -> int:
         raise ValueError(f"No letter(s) in string={s}")
     
     return (len(letters_pos), letters_pos[0], letters_pos[-1])
-
 
 def get_regex(letter_seq: str, empty_marker) -> str:
     """ Generate regex pattern string for a given letter sequence.
@@ -64,11 +62,10 @@ def get_regex(letter_seq: str, empty_marker) -> str:
     result = ''.join(result_list) + pfix
     return result
 
-def gen_patterns(letter_seq: str, pos, min_size, empty_marker='-'): 
-    """Generate all regex patterns and sub-patterns from letter_seq 
+def generate_patterns(letter_seq: str, pos, min_size, empty_marker='-'): 
+    """Generate all regex subpatterns from letter_seq 
     (with 1 or more letters) of size larger or equal to min_size.
     Where pos indicates position in grid 
-
     Args:
         letter_seq: letters pattern, e.g. '--R----G--E'
         pos: Position index in grid where letter_seq starts (row or col)
@@ -86,17 +83,25 @@ def gen_patterns(letter_seq: str, pos, min_size, empty_marker='-'):
         # trim "right":
         sub_seq = letter_seq[:last_char_pos-1]
         if len(sub_seq) > 1:
-            yield from gen_patterns(sub_seq, pos, min_size)
+            yield from generate_patterns(sub_seq, pos, min_size)
         # trim "left"
         new_pos = pos + first_char_pos + 2
         sub_seq = letter_seq[first_char_pos+2:]
         if len(sub_seq) > 1:
-            yield from gen_patterns(sub_seq, new_pos, min_size)
+            yield from generate_patterns(sub_seq, new_pos, min_size)
 
 
 # -----------------------
-# Data domain model
+# Domain model
 # -----------------------
+
+class StopCondition(enum.Enum):
+        # Available row/col are all currently blocked (most likely)
+        ALL_BLOCKED = -1
+        # All row/col either completed or empty (rarely)
+        COMPLETED = -2
+        # No more words to select from
+        NO_MORE_WORDS = -3
 
 class Location(NamedTuple):
     direction : int
@@ -129,9 +134,6 @@ class Word:
         else:
             self.row = location.index
             self.col = pos
-
-        
-        
     
     # @cache TODO: test fail when using cache decorator
     def span(self, padding=False) -> list[int]:
@@ -147,7 +149,6 @@ class Word:
             end = self.row + self.size - 1 + (1 if padding else 0)
             return list(range(start, end+1))
     
-       
     def letter_at(self, cell_row: int, cell_col: int) -> str:
         """Return letter at given cell (row, col) if part of this word, else None.
         """
@@ -177,9 +178,9 @@ class Puzzle:
             if len(w[0]) <= self.grid_size:
                 self.available_words.append(Word(word=w[0], clue=w[1]))
         self.available_words.sort(key=lambda x: len(x.word), reverse=True)
+
         # '[3]WORDX[7]WORDY...'
         self.available_wordseq = ''.join([f"[{i}]{w.canonical}" for i, w in enumerate(self.available_words)])
-
         self.placed_words: dict[Location, list[Word]] = {}
         self.nb_placed_words = 0
         
@@ -189,45 +190,47 @@ class Puzzle:
         # convenient structures
         self.grid = [[self.empty_marker for _ in range(self.grid_size)] for _ in range(self.grid_size)]
         # No word can fit these row/col Adresses  (no space left)
-        self.complete_indexes: set[Location] = set() 
+        self.complete_locations: set[Location] = set() 
         # No Word and letter present on these row/col Adresses to attach word
-        self.empty_indexes: set[Location] = { Location(direction=d, index=i) for d in [0,1] for i in range(self.grid_size)} 
+        self.empty_locations: set[Location] = { Location(direction=d, index=i) for d in [0,1] for i in range(self.grid_size)} 
+        # all possibles locations
+        self.all_locations: set[Location] = { Location(direction=d, index=i) for d in [0,1] for i in range(self.grid_size)}
     
-    def _get_entirepattern(self, loc: Location) -> str:
-        """Derive text pattern for the entire row/col (given by index and direction), 
-        with empty markers, filled markers and letter from perpendicular placed words.
+    def _entire_textpattern(self, loc: Location) -> str:
+        """Derive text pattern for the entire row/col (loc), with empty markers, 
+        filled markers and letter from perpendicular placed words.
         """
         if loc.direction == 0:
             pattern = [self.grid[loc.index][c] for c in range(self.grid_size)]
         else:
             pattern = [self.grid[r][loc.index] for r in range(self.grid_size)]
 
-        # block cell from words placed in direction on same col/row (index)
+        # blocking cells from words placed on same col/row
         block_cells = [ cells for w in self.placed_words.get(loc, []) for cells in w.span(padding=True)]
         
-        # block cell from words on "left" col/row 
-        left_spans = []
+        # blocking cells from words on "left" col/row 
+        left_cells = []
         if loc.index > 0:
             left_adress = Location(loc.direction, loc.index - 1)
-            left_spans = [ cells for w in self.placed_words.get(left_adress, []) for cells in w.span()]
+            left_cells = [ cells for w in self.placed_words.get(left_adress, []) for cells in w.span()]
 
-        # block cell from words on "right" col/row'
-        right_spans = []
+        # blocking cells from words on "right" col/row'
+        right_cells = []
         if loc.index < self.grid_size - 1:
             right_adress = Location(loc.direction, loc.index + 1)
-            right_spans = [ cells for w in self.placed_words.get(right_adress, []) for cells in w.span() ]
+            right_cells = [ cells for w in self.placed_words.get(right_adress, []) for cells in w.span() ]
 
-        # go over each cell in fullpattern and mark blocked ones
+        # go over each cell and mark blocked ones
         for cell_i in range(self.grid_size):
             if cell_i in block_cells:
                 pattern[cell_i] = self.filled_marker
             elif pattern[cell_i] == self.empty_marker:
-                # left/right spans only block when no letter present (from perpendicular placed words)
-                if cell_i in left_spans or cell_i in right_spans:
+                # left/right spans block empty cells
+                if cell_i in left_cells or cell_i in right_cells:
                     pattern[cell_i] = self.filled_marker
-                # block also cell neighbor of an end/start of a word placed perpendicularly
+                # also block by a word placed perpendicularly ending/starting on neighbor cell 
                 if loc.direction == 1:
-                    # "left"
+                    # "left" (at least a 2-letter word)
                     if loc.index >= 2 and self.grid[cell_i][loc.index-1] != self.empty_marker: 
                         pattern[cell_i] = self.filled_marker
                     # "right"
@@ -243,17 +246,16 @@ class Puzzle:
         return ''.join(pattern)
 
 
-    def _get_subpatterns(self, loc: Location) -> list[tuple[str,int]]:
+    def _get_all_subpatterns(self, loc: Location, min_size_word) -> list[tuple[str,int]]:
         """
         """
         
-        entirepattern = self._get_entirepattern(loc)
+        entirepattern = self._entire_textpattern(loc)
 
         letter_sequences : list[tuple[str,int]] = []
         # Add consecutive subpatterns of minimum size 2
         for s in entirepattern.split(self.filled_marker):
-            # accept long enough pattern and having at least one letter
-            if len(s) >= 2:
+            if len(s) >= min_size_word:
                 letter_sequences.append((s,entirepattern.index(s)))
         
         # return tuple of (sub-pattern, position) sorted from largest to smallest in length
@@ -261,58 +263,53 @@ class Puzzle:
 
 
     def fillout(self, timeout: int = 60):
-        """Randonly select a not empty and not filled row or col, get its letter_sequence consecutive pattens
-          and try to find a matching word
+        """Fillout all Grid iteratively byy trying to place none empty or filled row or col randomly
         
-        Shoud probably prioritize the one with longest letter_seq available!!
         ..to be experimented!
         """
         start_time = time.time()
         iter, iter_skip = 0, 0
         self.place_first_word()
         
-        self.currently_blocked = set()
+        currently_blocked : set[Location] = set()
         # randomly fill out rows/cols
         while True:
             iter += 1
-            selection = self.next_selection(self.currently_blocked)
+            selection = self.next_selection(currently_blocked)
 
-            if selection[0] < 0:
+            if type(selection) == StopCondition:
                 self.elapse_time = time.time()-start_time
-                print(f"Fillout completed in {self.elapse_time:.2f} sec! #iterations={iter} (#skips={iter_skip})! --> {selection[1]}")
+                print(f"Fillout completed in {self.elapse_time:.2f} sec! #iterations={iter} (#skips={iter_skip})! --> {selection}")
                 break
             
-            the_direction = selection[0]
-            the_index = selection[1]
-            letter_seqs = self._get_subpatterns(the_direction, the_index)
+            letter_seqs = self._get_all_subpatterns(selection, self.min_size_word)
+            assert len(letter_seqs) > 0
 
-            # skip when currently blocked
-            if letter_seqs == -3:
-                self.currently_blocked.add(selection)
+            # skip when currently blocked (no search possible)
+            if self._is_location_blocked(letter_seqs):
+                currently_blocked.add(selection)
                 iter_skip += 1
                 continue
-            # current selection turn out to be complete
-            elif letter_seq == -1 or len(letter_seqs) == 0:
-                self.mark_as_complete(the_direction, the_index)
-                continue  
-
-            for letter_seq in letter_seqs:
-                match = self.find_matches(letter_seq[0])
+ 
+            # search for possible word match
+            for letter_seq, start_index in letter_seqs:
+                match = self.find_matches(letter_seq)
                 if match:
                     word_n, matched_word = match
                     # TODO: revalidate the letter_seq[1] as word may not start at beginning of letter_seq!!
-                    row, col = (the_index, letter_seq[1]) if the_direction == 0 else (letter_seq[1], the_index)
-                    self.place_word(word_n, row, col, the_direction)
-                    self.currently_blocked.clear()
+                    # row, col = (start_index, letter_seq) if location.direction == 0 else (letter_seq[1], the_index)
+                    # self.place_word(word_n, row, col, the_direction)
+                    currently_blocked.clear()
                     break
 
             if not match:
-                self.mark_as_complete(the_direction, the_index)
+                # add to currently blocked
+                currently_blocked.add(selection)
                 
 
-    def next_selection(self, currently_blocked: set):
+    def next_selection(self, currently_blocked: set[Location]):
         """
-        Selects the next row or column index for placing a word, considering certain conditions.
+        Selects randomly next row or col index for placing a word, considering certain conditions.
         Args:
             currently_blocked: A list of row/column indices that are temporarily blocked 
 
@@ -328,44 +325,29 @@ class Puzzle:
                     - index (int): The selected row or column index.
         
         """
-        # Stop Condition -2 
         if self.nb_placed_words == len(self.available_words):
-            return (-2, 'Stop condition: no more words to select from')
+            return StopCondition.NO_MORE_WORDS
 
-        available_choices = {(d,i) for d in random.randint(0,1) for i in range(self.grid_size) 
-                                if i not in self.complete_indexes[d] and 
-                                   i not in self.empty_indexes[d]}
+        available_locations = self.all_locations.difference(self.complete_locations, self.empty_locations)
         
-        # Stop Condition -1: all row/col either completed or empty  
-        if len(available_choices) == 0:
-            return (-1, 'Stop condition: all row/col either completed or empty')
+        if len(available_locations) == 0:
+            return StopCondition.COMPLETED
         
-        # Stop Condition -3 
-        if available_choices == currently_blocked:
-            return (-3, 'Stop condition: Available row/col are all currently blocked')
+        if available_locations == currently_blocked:
+            return StopCondition.ALL_BLOCKED
         
-        return random.choice(available_choices)    
+        return random.choice(available_locations)
 
-
-    def _is_blocked(self, subpatterns: list[tuple[str,int]]):
+    def _is_location_blocked(self, subpatterns: list[tuple[str,int]]):
         for p in subpatterns:
             assert p.count(self.filled_marker) == 0
             if p.count(self.empty_marker) < len(p):
                 return False
         return True
-    
-    def _is_complete(self, subpatterns: list[tuple[str,int]]):
-        """ True if all subpatterns are too short to fit smallest word in self.available_words
-        """
-        if len(subpatterns) == 0:
-            return True
 
-        for p in subpatterns:
-            assert p.count(self.filled_marker) == 0
-            if len(p) >= len(self.min_size_word):
-                return False
-        return True
-
+    def _is_location_complete(self, loc: Location):
+        subpatterns = self._get_all_subpatterns(loc, self.min_size_word)
+        return len(subpatterns) == 0
 
     def find_matches(self, letter_seq: str) -> Optional[tuple[int, str]]:
         """Find and return first word fitting the row/col letter_seq
@@ -399,7 +381,7 @@ class Puzzle:
                 loc = Location(random.choice([0,1]), index=random.randint(0, self.grid_size - 1))
                 pos = random.randint(0, self.grid_size - first_w_len)
             
-            self.place_word(word_index=word_index, loc=loc, pos=pos)
+            return self.place_word(word_index=word_index, loc=loc, pos=pos)
 
     def place_word(self, word_index: int, loc: Location, pos: int):
         """Place word identified by word_n at given row, col, direction in grid.
@@ -415,9 +397,7 @@ class Puzzle:
         self.placed_words.setdefault(loc, []).append(word)
         self.nb_placed_words += 1
         self.refresh_structures(word, word_index, loc, pos)
-
         return word
-
 
     def refresh_structures(self, word: Word, word_index: int, loc: Location, pos: int):
 
@@ -435,22 +415,22 @@ class Puzzle:
             e_index = len(self.available_wordseq)
         self.available_wordseq = self.available_wordseq[:s_index] + self.available_wordseq[e_index:]
                 
-        # self.empty_indexes
-        self.empty_indexes.difference_update({Location(direction=1-loc.direction, index=i) for i in word.span()})
+        # self.empty_indexes 
+        self.empty_locations.difference_update({Location(direction=1-loc.direction, index=i) for i in word.span()})
         
         # self.complete_indexes on current index
-        if self._is_complete(self._get_subpatterns(loc)):
-            self.complete_indexes.add(loc)
+        if self._is_location_complete(loc):
+            self.complete_locations.add(loc)
         # on "left index"
         if loc.index > 0:
             left_loc = Location(loc.direction, index=loc.index-1)
-            if self._is_complete(self._get_subpatterns(left_loc)):
-                self.complete_indexes.add(left_loc)
+            if self._is_location_complete(left_loc):
+                self.complete_locations.add(left_loc)
         # on "right index"
         if loc.index < self.grid_size - 1:
             right_loc = Location(loc.direction, index=loc.index+1)
-            if self._is_complete(self._get_subpatterns(right_loc)):
-                self.complete_indexes.add(right_loc)
+            if self._is_location_complete(right_loc):
+                self.complete_locations.add(right_loc)
 
     
     def stats_info(self):
