@@ -2,7 +2,7 @@ import pytest
 import domain
 
 
-def tst_count_chars():
+def test_count_letters():
     try:
         ret = domain.count_letters('-------')
         assert False, "Expected ValueError for no letters"
@@ -17,22 +17,22 @@ def tst_count_chars():
 
 
 
-def tst_get_regex():
+def test_get_regex():
     # en empty grid not valid (for 1st word is handled exceptionnally) 
     try:
-        ret = domain.get_regex('-------')
+        ret = domain.get_regex('-------', empty_marker='-')
         assert False, "Expected ValueError for no letters"
     except ValueError:
         pass
 
-    ret = domain.get_regex('--R----G--E')
+    ret = domain.get_regex('--R----G--E', empty_marker='-')
     assert ret == r'\[(\d+)\](\w{0,2}R\w{4}G\w{2}E)\[(\d+)\]'
 
-    ret = domain.get_regex('F-ß---K---中--')
+    ret = domain.get_regex('F-ß---K---中--', empty_marker='-')
     assert ret == r'\[(\d+)\](F\w{1}ß\w{3}K\w{3}中\w{0,2})\[(\d+)\]'
 
 
-def tst_gen_patterns():
+def test_gen_patterns():
 
     try:
         for p in domain.gen_patterns('------', 0, 2):
@@ -82,21 +82,24 @@ def tst_gen_patterns():
     assert set(patterns) == set(expected_patterns)
 
 
-def tst_word():
+def test_word():
     word = domain.Word(word='Test')
-    word.set_position(row=1, col=2, direction=0)
+    assert word.canonical == 'TEST'
+    
+    loc = domain.Location(direction=0, index=1)
+    word.set_position(location=loc, pos=2)
     assert word.letter_at(0,0) is None
     assert word.letter_at(1,1) is None
     assert word.letter_at(1,6) is None
     assert word.letter_at(1,2) == 'T'
     assert word.letter_at(1,3) == 'E'
     assert word.letter_at(1,5) == 'T'
-    assert word.canonical == 'TEST'
     
     assert word.span(padding=False) == [2,3,4,5]
     assert word.span(padding=True) == [1,2,3,4,5,6]
 
-    word.set_position(row=0, col=0, direction=1)
+    loc = domain.Location(direction=1, index=0)
+    word.set_position(location=loc, pos=0)
     assert word.letter_at(0,0) == 'T'
     assert word.letter_at(3,0) == 'T'
     assert word.letter_at(4,0) is None
@@ -106,7 +109,7 @@ def tst_word():
 
 
 
-def test_puzzle():
+def tst_puzzle():
     def ppuzzle(title, puzzle):
         print('\n' + title + ':') 
         print(puzzle)
@@ -150,7 +153,7 @@ def test_puzzle():
     assert puzzle.available_wordseq == '[0]MOTSDESFA[1]DATAVAULT[2]SORSDELA[3]WTESBER[4]ECOLOS[5]SMALL[6]SHORT[8]BADA[9]SM'
 
     assert puzzle._get_entirepattern(word.direction, word.col) == '-000000--'
-    assert puzzle._get_unblocked_patterns(word.direction, word.col) == -3
+    assert puzzle._get_subpatterns(word.direction, word.col) == -3
 
     try: 
         puzzle._get_entirepattern(word.direction, word.col-1)
@@ -159,10 +162,10 @@ def test_puzzle():
         pass
 
     assert puzzle._get_entirepattern(1-word.direction,word.row) == '---W-----'
-    assert puzzle._get_unblocked_patterns(1-word.direction, word.row) == [('---W-----',0)]
+    assert puzzle._get_subpatterns(1-word.direction, word.row) == [('---W-----',0)]
 
     assert puzzle._get_entirepattern(1-word.direction,5) == '---D-----'
-    assert puzzle._get_unblocked_patterns(1-word.direction, 5) == [('---D-----',0)]
+    assert puzzle._get_subpatterns(1-word.direction, 5) == [('---D-----',0)]
 
     #######################################################################
     title = 'Two with Bada'
@@ -177,11 +180,11 @@ def test_puzzle():
     assert puzzle._get_entirepattern(bada.direction, bada.row) == '000000---'
     assert puzzle._get_entirepattern(bada.direction, bada.row-1) == '-00R0----'
     assert puzzle._get_entirepattern(bada.direction, bada.row-2) == '---O-----'
-    assert puzzle._get_unblocked_patterns(bada.direction, bada.row-2) == [('---O-----',0)]
+    assert puzzle._get_subpatterns(bada.direction, bada.row-2) == [('---O-----',0)]
 
     assert puzzle._get_entirepattern(1-bada.direction, 1) == '-----B---'
     assert puzzle._get_entirepattern(1-bada.direction, 4) == '--000A---'
-    assert puzzle._get_unblocked_patterns(1-bada.direction, 4) == [('A---',5)]
+    assert puzzle._get_subpatterns(1-bada.direction, 4) == [('A---',5)]
 
 
     #######################################################################
@@ -193,15 +196,15 @@ def test_puzzle():
     assert puzzle.available_wordseq == '[0]MOTSDESFA[1]DATAVAULT[2]SORSDELA[3]WTESBER[5]SMALL[6]SHORT[9]SM'
 
     assert puzzle._get_entirepattern(1, 1) == '---E-B---'
-    assert puzzle._get_unblocked_patterns(1, 1) == [('---E-B---',0)]
+    assert puzzle._get_subpatterns(1, 1) == [('---E-B---',0)]
     assert puzzle._get_entirepattern(1, 2) == '--0C0A---'
-    assert puzzle._get_unblocked_patterns(1, 2) == [('A---',5)]
+    assert puzzle._get_subpatterns(1, 2) == [('A---',5)]
 
     assert puzzle._get_entirepattern(1, 5) == '---O-0---'
-    assert puzzle._get_unblocked_patterns(1, 5) == [('---O-',0)]
+    assert puzzle._get_subpatterns(1, 5) == [('---O-',0)]
 
     assert puzzle._get_entirepattern(0, 4) == '-00R000--'
-    assert puzzle._get_unblocked_patterns(0, 4) == []
+    assert puzzle._get_subpatterns(0, 4) == []
 
 
     #######################################################################
@@ -213,20 +216,20 @@ def test_puzzle():
     assert puzzle.available_wordseq == '[0]MOTSDESFA[1]DATAVAULT[3]WTESBER[5]SMALL[6]SHORT[9]SM'
 
     assert puzzle._get_entirepattern(1, 6) == '000000000'
-    assert puzzle._get_unblocked_patterns(1, 6) == -1
+    assert puzzle._get_subpatterns(1, 6) == -1
 
     assert puzzle._get_entirepattern(0, 4) == '-00R00D--'
-    assert puzzle._get_unblocked_patterns(0, 4) == [('D--',6)]
+    assert puzzle._get_subpatterns(0, 4) == [('D--',6)]
 
     assert puzzle._get_entirepattern(0, 7) == '------A--'
-    assert puzzle._get_unblocked_patterns(0, 7) == [('------A--',0)]
+    assert puzzle._get_subpatterns(0, 7) == [('------A--',0)]
 
     # there is one letter + empty cell, so no exception/condition (could accomodate smallest word)!
     assert puzzle._get_entirepattern(1, 5) == '000O0000-'
-    assert puzzle._get_unblocked_patterns(1, 5) == []
+    assert puzzle._get_subpatterns(1, 5) == []
 
     assert puzzle._get_entirepattern(0,2) == '-00W00R--'
-    assert puzzle._get_unblocked_patterns(1-word.direction, word.row) == [('R--',6)]
+    assert puzzle._get_subpatterns(1-word.direction, word.row) == [('R--',6)]
 
 
     #######################################################################
@@ -238,4 +241,4 @@ def test_puzzle():
     assert puzzle.available_wordseq == '[0]MOTSDESFA[1]DATAVAULT[5]SMALL[6]SHORT[9]SM'
 
     assert puzzle._get_entirepattern(0,7) == '-R----A--'
-    assert puzzle._get_unblocked_patterns(0,7) == [('-R----A--',0)]
+    assert puzzle._get_subpatterns(0,7) == [('-R----A--',0)]
